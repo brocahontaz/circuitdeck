@@ -32,9 +32,12 @@ jobs:
       - name: Install Rust toolchain
         # Toolchain pinned via the `toolchain` input; also declared as
         # `rust-version` in backend/Cargo.toml and used by Dockerfile/backend.
+        # rustfmt + clippy are explicit: the action installs --profile minimal,
+        # which does NOT include them (CI learned this the hard way).
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: '1.90'
+          components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -98,18 +101,26 @@ jobs:
   workflows:
     name: Workflow lint
     runs-on: ubuntu-24.04
+    # contents: read is the maximum this job needs. IMPORTANT: do not request
+    # more (e.g. security-events: write) — when ci.yml is reused by
+    # docker-publish.yml (whose workflow-level grant is contents: read), a
+    # callee job cannot exceed the caller's permissions and GitHub rejects the
+    # whole publish run at startup (startup_failure with zero jobs).
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Check for secrets
+        # gitleaks v3 uses GITHUB_TOKEN only for PR comments and optional
+        # SARIF artifact upload; neither requires security-events: write.
+        # Findings fail the job via the action's exit code.
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
       - name: Shell script lint
         run: shellcheck factorio/bootstrap.sh factorio/exporter/serve.sh

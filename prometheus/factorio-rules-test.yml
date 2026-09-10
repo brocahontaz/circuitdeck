@@ -1,0 +1,32 @@
+# promtool unit tests for prometheus/factorio-rules.yml (real-mode translation).
+# Run: docker run --rm -v $PWD/prometheus:/prom:ro --entrypoint /bin/promtool prom/prometheus:v3.7.3 test rules /prom/factorio-rules-test.yml
+# promtool unit test for the CircuitDeck real-mode power rules.
+evaluation_interval: 15s
+rule_files:
+  - /prom/factorio-rules.yml
+tests:
+  - interval: 15s
+    input_series:
+      - series: 'factorio_power_production_input{name="solar-panel",force="player",network="1",surface="nauvis",instance="e:9100",job="factorio-metrics"}'
+        values: '0+72000x400'
+      - series: 'factorio_power_production_input{name="steam-engine",force="player",network="1",surface="nauvis",instance="e:9100",job="factorio-metrics"}'
+        values: '0+108000x400'
+    promql_expr_test:
+      # recorded per-tick joules: (72000/15)/60 + (108000/15)/60 = 80 + 120 = 200
+      - expr: sum(graftorio_factorio_power_production{type="overall"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 200
+      # backend MW = recorded * 60 / 1e6 = 200 * 60 / 1e6 = 0.012
+      - expr: sum(graftorio_factorio_power_production{type="overall"}) * 60 / 1000000
+        eval_time: 10m
+        exp_samples:
+          - labels: '{}'
+            value: 0.012
+      # by_source series: backend shape {type="by_source",source=...}
+      - expr: graftorio_factorio_power_production{type="by_source",source="steam-engine"}
+        eval_time: 10m
+        exp_samples:
+          - labels: 'graftorio_factorio_power_production{source="steam-engine",type="by_source"}'
+            value: 119.99999999999999

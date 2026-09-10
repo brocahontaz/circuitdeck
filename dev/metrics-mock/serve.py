@@ -373,7 +373,7 @@ class MetricsHandler(BaseHTTPRequestHandler):
     ticks_per_scrape = 900  # overridden in main() from --interval
 
     def do_GET(self) -> None:  # noqa: N802 (http.server API)
-        if self.path != "/metrics":
+        if self.path not in ("/metrics", "/metrics.sh"):
             self.send_response(404)
             self.end_headers()
             return

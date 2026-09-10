@@ -1,11 +1,28 @@
 name: circuitdeck
 
+# ---------------------------------------------------------------------------
+# Two development modes, selected with Compose profiles:
+#
+#   Mock (default, fast, no Factorio required):
+#     docker compose --profile mock up --build
+#
+#   Real Factorio server (graftorio3 -> textfile -> Prometheus):
+#     docker compose --profile factorio up --build
+#
+# The mock and the real Factorio stack are mutually exclusive: the mock
+# service only runs with the `mock` profile, while the Factorio server +
+# metrics exporter only run with the `factorio` profile. Prometheus picks
+# the matching metrics source automatically; FACTORIO_METRICS_TARGET /
+# FACTORIO_RECORDING_RULES override it explicitly (production).
+# ---------------------------------------------------------------------------
+
 services:
   # ---------------------------------------------------------------------------
-  # Mock Factorio metrics source (development only).
-  # In production, point Prometheus at node_exporter on the Factorio host.
+  # Mock Factorio metrics source (development only, default mode).
+  # Disabled when the `factorio` profile is active.
   # ---------------------------------------------------------------------------
   circuitdeck-mock:
+    profiles: [mock]
     build:
       context: ./dev/metrics-mock
       dockerfile: Dockerfile
@@ -13,6 +30,78 @@ services:
     restart: unless-stopped
     ports:
       - "9105:9105"
+    networks: [circuitdeck]
+
+  # ---------------------------------------------------------------------------
+  # Real Factorio dedicated server (development only, `factorio` profile).
+  # factoriotools/factorio image; the bootstrap entrypoint installs the
+  # vendored graftorio3 mod and LAN server settings on first start.
+  # Saves live in the factorio-data volume and survive restarts.
+  # ---------------------------------------------------------------------------
+  factorio:
+    profiles: [factorio]
+    image: factoriotools/factorio:${FACTORIO_VERSION:-latest}
+    container_name: circuitdeck-factorio
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/circuitdeck/bootstrap.sh"]
+    environment:
+      # Map generation on first start (skipped automatically once a save
+      # exists in the volume).
+      GENERATE_NEW_SAVE: "true"
+      LOAD_LATEST_SAVE: "true"
+      SAVE_NAME: ${FACTORIO_SAVE_NAME:-circuitdeck-dev}
+      PRESET: ${FACTORIO_PRESET:-}
+      # RCON / server settings rendered by bootstrap (safe local defaults).
+      FACTORIO_RCON_PASSWORD: ${FACTORIO_RCON_PASSWORD:-circuitdeck}
+      FACTORIO_RCON_PORT: "27015"
+      FACTORIO_GAME_PASSWORD: ${FACTORIO_GAME_PASSWORD:-}
+      FORCE_BOOTSTRAP: ${FACTORIO_FORCE_BOOTSTRAP:-false}
+    ports:
+      # Only required ports: game (UDP) + RCON (TCP, localhost only).
+      - "${FACTORIO_GAME_PORT:-34197}:34197/udp"
+      - "127.0.0.1:${FACTORIO_RCON_PORT:-27015}:27015/tcp"
+    volumes:
+      - factorio-data:/factorio
+      - ./factorio:/circuitdeck:ro
+    # The server must accept game connections before metrics exist.
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "ls /factorio/script-output/graftorio3/game.prom >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 120s
+    networks: [circuitdeck]
+
+  # ---------------------------------------------------------------------------
+  # factorio-metrics exporter: serves the graftorio3 .prom textfile at
+  # :9100/metrics for Prometheus. `factorio` profile only.
+  # ---------------------------------------------------------------------------
+  factorio-exporter:
+    profiles: [factorio]
+    build:
+      context: ./factorio
+      dockerfile: exporter/Dockerfile
+    container_name: circuitdeck-factorio-exporter
+    restart: unless-stopped
+    environment:
+      PROM_DIR: /data/script-output/graftorio3
+      PORT: "9100"
+    volumes:
+      - factorio-data:/data:ro
+    ports:
+      - "127.0.0.1:9100:9100"
+    depends_on:
+      factorio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/metrics | grep -q ."]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     networks: [circuitdeck]
 
   # ---------------------------------------------------------------------------
@@ -24,20 +113,77 @@ services:
     restart: unless-stopped
     # The official prom/prometheus image does not expand env vars in config
     # files, so render the template (prometheus/prometheus.yml) with busybox
-    # sed before starting the server.
+    # sed before starting the server, replacing the placeholder target with
+    # the resolved metrics source. The mode is auto-selected: when the
+    # factorio-exporter container is on the network (real mode) its endpoint
+    # and the factorio_* recording rules are used; otherwise the bundled
+    # mock. FACTORIO_METRICS_TARGET / FACTORIO_RECORDING_RULES explicitly
+    # override the auto-selection (production setups always set both).
     entrypoint:
       - /bin/sh
       - -ec
       - |
-        sed "s|\$${FACTORIO_METRICS_TARGET}|$$FACTORIO_METRICS_TARGET|g" \
+        # Detect the running mode once. The mock container exists ONLY in
+        # mock mode (the profiles are mutually exclusive), so probing it is
+        # a deterministic mode signal: a few seconds of DNS retries cover
+        # the container-creation race, then mock mode falls back instantly.
+        # In real mode the mock never exists; wait up to ~3 minutes for the
+        # exporter (the factorio healthcheck gates its start).
+        MOCK_UP="false"
+        i=0
+        while [ "$$i" -lt 15 ]; do
+          # The mock container exists only in mock mode; DNS failure
+          # ("bad address") is the definitive real-mode signal and fails
+          # fast, so bail out of the wait as soon as we see it.
+          if wget -qO- -T 2 http://circuitdeck-mock:9105/metrics.sh >/dev/null 2>&1; then
+            MOCK_UP="true"
+            break
+          fi
+          if wget -T 2 -O /dev/null http://circuitdeck-mock:9105/ 2>&1 | grep -q "bad address"; then
+            break
+          fi
+          i=$$((i + 1))
+          sleep 2
+        done
+        if [ -n "$$FACTORIO_METRICS_TARGET" ]; then
+          TARGET="$$FACTORIO_METRICS_TARGET"
+        elif [ "$$MOCK_UP" = "true" ]; then
+          TARGET="circuitdeck-mock:9105"
+        else
+          i=0
+          while [ "$$i" -lt 90 ]; do
+            if wget -qO- -T 2 http://factorio-exporter:9100/metrics >/dev/null 2>&1; then
+              break
+            fi
+            i=$$((i + 1))
+            sleep 2
+          done
+          TARGET="factorio-exporter:9100"
+        fi
+        if [ -n "$$FACTORIO_RECORDING_RULES" ]; then
+          RULES="$$FACTORIO_RECORDING_RULES"
+        elif [ "$$MOCK_UP" = "true" ]; then
+          RULES="false"
+        else
+          RULES="true"
+        fi
+        sed "s|__FACTORIO_METRICS_TARGET__|$$TARGET|g" \
           /etc/prometheus/prometheus.template.yml > /prometheus/prometheus.yml
+        if [ "$$RULES" = "true" ]; then
+          printf '\nrule_files:\n  - /etc/prometheus/factorio-rules.yml\n' \
+            >> /prometheus/prometheus.yml
+        fi
         exec /bin/prometheus --config.file=/prometheus/prometheus.yml \
           --storage.tsdb.retention.time=15d --web.enable-lifecycle "$$@"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.template.yml:ro
+      - ./prometheus/factorio-rules.yml:/etc/prometheus/factorio-rules.yml:ro
       - prometheus-data:/prometheus
     environment:
-      FACTORIO_METRICS_TARGET: ${FACTORIO_METRICS_TARGET:-circuitdeck-mock:9105}
+      # Optional explicit override; empty lets the entrypoint auto-select the
+      # metrics source based on which mode is running (see entrypoint above).
+      FACTORIO_METRICS_TARGET: ${FACTORIO_METRICS_TARGET:-}
+      FACTORIO_RECORDING_RULES: ${FACTORIO_RECORDING_RULES:-}
     ports:
       - "9090:9090"
     healthcheck:
@@ -97,3 +243,4 @@ networks:
 
 volumes:
   prometheus-data:
+  factorio-data:

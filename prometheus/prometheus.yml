@@ -2,18 +2,29 @@
 #
 # NOTE: the official prom/prometheus image does NOT expand environment
 # variables in config files. The compose entrypoint renders this template
-# with busybox sed before starting Prometheus:
-#   ${FACTORIO_METRICS_TARGET} -> value of the env var, defaulting to the
-#   bundled mock generator (circuitdeck-mock:9105) in development.
+# with busybox sed before starting Prometheus, replacing the
+# __FACTORIO_METRICS_TARGET__ placeholder with the value of the
+# FACTORIO_METRICS_TARGET env var (defaulting to the bundled mock
+# generator, circuitdeck-mock:9105, in development).
 #
 # The `factorio-metrics` job points at the endpoint exposing
 # graftorio3-compatible metrics:
-#   - dev:  the bundled mock generator (circuitdeck-mock:9105)
+#   - dev mock mode: the bundled mock generator (circuitdeck-mock:9105)
+#   - dev real mode: the factorio-metrics exporter serving the graftorio3
+#     mod's textfile (factorio-exporter:9100); set with
+#     `FACTORIO_METRICS_TARGET=factorio-exporter:9100` and
+#     `FACTORIO_RECORDING_RULES=true` (the compose factorio profile does
+#     both automatically)
 #   - prod: node_exporter's textfile collector on the Factorio host
 #           (set FACTORIO_METRICS_TARGET=your-factorio-host:9100)
 #
 # graftorio3 writes .prom files into the node_exporter textfile directory:
+#   https://github.com/Furoon/graftorio3 (Factorio 2.1, node_exporter output)
 #   https://github.com/tarik-guney/graftorio (2.x lineage)
+#
+# In real mode the compose entrypoint also appends a rule_files section
+# pointing at factorio-rules.yml, which translates the mod's factorio_*
+# series into the canonical graftorio_factorio_* names the backend queries.
 
 global:
   scrape_interval: 15s
@@ -23,10 +34,10 @@ global:
 
 scrape_configs:
   - job_name: "factorio-metrics"
-    metrics_path: /metrics
+    metrics_path: /metrics.sh
     static_configs:
       - targets:
-          - "${FACTORIO_METRICS_TARGET}"
+          - "__FACTORIO_METRICS_TARGET__"
 
   - job_name: "prometheus"
     static_configs:

@@ -1,0 +1,6 @@
+{
+  "mods": [
+    { "name": "base", "enabled": true },
+    { "name": "graftorio3", "enabled": true, "version": "2.0.0" }
+  ]
+}

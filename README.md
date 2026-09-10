@@ -33,11 +33,12 @@ Factorio 2.1
 │   └── src/
 │       ├── lib/      API client, chart wrapper, UI primitives, router
 │       └── views/    One component per dashboard view
-├── prometheus/       Prometheus scrape configuration
+├── prometheus/       Prometheus scrape config + factorio_* recording rules
 ├── dev/metrics-mock/ graftorio3-compatible mock metrics source (dev only)
+├── factorio/         Real-Factorio mode: vendored graftorio3 mod + bootstrap
 ├── docker/           Frontend Caddyfile
 ├── Dockerfile/       Multi-stage builds (backend, frontend)
-├── docker-compose.yml Complete dev environment (one command)
+├── docker-compose.yml Dev environment, two modes (mock | factorio profiles)
 └── Makefile           Host-side development tasks
 ```
 
@@ -60,25 +61,81 @@ Errors return a structured JSON body: `{"error": {"code", "message"}}`.
 
 ## Quick start (development)
 
+Two mutually exclusive development modes, selected with Compose profiles:
+
 ```sh
-docker compose up --build
+# Fast/default development using mock Factorio data (no Factorio required)
+docker compose --profile mock up --build
+
+# Development against a real Factorio dedicated server
+docker compose --profile factorio up --build
 ```
 
-Then open **http://localhost:8088**.
+Then open **http://localhost:8088** in both cases.
+(`make up` / `make up-factorio` are shortcuts; copying `.env.example` to
+`.env` makes plain `docker compose up` default to mock mode.)
+
+### Mock mode (default)
+
+```sh
+docker compose --profile mock up --build
+```
 
 This starts, with no real Factorio server required:
 
-| Service              | Port | Purpose                                            |
-| -------------------- | ---- | -------------------------------------------------- |
-| `circuitdeck-frontend` | 8088 | Dashboard UI + `/api` reverse proxy               |
-| `circuitdeck-backend`  | 8080 | Rust API (owns all PromQL)                        |
-| `prometheus`           | 9090 | Telemetry storage/query                           |
-| `circuitdeck-mock`     | 9105 | graftorio3-compatible mock metrics source         |
+| Service                | Port | Purpose                                    |
+| ---------------------- | ---- | ------------------------------------------ |
+| `circuitdeck-frontend` | 8088 | Dashboard UI + `/api` reverse proxy        |
+| `circuitdeck-backend`  | 8080 | Rust API (owns all PromQL)                 |
+| `prometheus`           | 9090 | Telemetry storage/query                    |
+| `circuitdeck-mock`     | 9105 | graftorio3-compatible mock metrics source  |
 
 The mock generator emits realistic graftorio3 metrics with a deterministic
 day/night power cycle, drifting production rates and rolling research, so the
 dashboard shows believable moving data immediately. Replace it in production
 by pointing Prometheus at your Factorio host (see below).
+
+### Real Factorio mode
+
+```sh
+docker compose --profile factorio up --build
+```
+
+This starts the dashboard stack plus:
+
+| Service             | Port                | Purpose                                            |
+| ------------------- | ------------------- | -------------------------------------------------- |
+| `factorio`          | 34197/udp, 27015/tcp | Factorio 2.1 dedicated server (LAN, join in game) |
+| `factorio-exporter` | 9100                | Serves the graftorio3 `.prom` textfile to Prometheus |
+
+How it works:
+
+1. `factorio/` contains the vendored
+   [graftorio3 2.0.0](https://github.com/Furoon/graftorio3) mod (MIT) and a
+   bootstrap script. The server image (`factoriotools/factorio`, version
+   configurable via `FACTORIO_VERSION`) installs the mod and LAN server
+   settings on first start, then auto-generates a save (`circuitdeck-dev`).
+2. graftorio3 writes `script-output/graftorio3/game.prom` (Prometheus
+   textfile) every few game seconds.
+3. `factorio-exporter` (tiny busybox sidecar) serves that file at
+   `:9100/metrics`; Prometheus scrapes it.
+4. `prometheus/factorio-rules.yml` records rules translating the mod's
+   `factorio_*` series into the canonical `graftorio_factorio_*` series the
+   backend queries — the dashboard needs no mock-vs-real knowledge.
+5. The save lives in the `factorio-data` Docker volume and survives restarts;
+   `docker compose --profile factorio down` keeps it, `make factorio-reset`
+   deletes it (next start regenerates a fresh map).
+
+Useful commands:
+
+```sh
+make factorio-logs   # tail Factorio server logs
+make factorio-reset  # wipe the local save (destructive)
+docker compose --profile factorio exec factorio rcon /h   # RCON console
+```
+
+To connect with the game client: join `localhost:34197` (LAN), password from
+`FACTORIO_GAME_PASSWORD` if set.
 
 ### Host-side development (no Docker)
 
@@ -119,7 +176,8 @@ Test coverage includes:
 - backend API integration tests against a mock Prometheus (wiremock)
 - frontend unit tests (formatting, routing, API error mapping)
 - frontend component tests (loading/empty/degraded/error states)
-- the Docker stack (`docker compose up --build`) as the end-to-end check
+- the Docker stack in both modes (`docker compose --profile mock up --build`
+  and `--profile factorio`) as the end-to-end check
 
 ## Production setup
 
@@ -144,7 +202,9 @@ labels:
 
    On the Factorio host, run node_exporter with the textfile collector
    (`--collector.textfile.directory=...`) and let graftorio3 write its `.prom`
-   files there.
+   files there. If that host also runs the graftorio3 mod, enable
+   `FACTORIO_RECORDING_RULES=true` so its `factorio_*` series are translated
+   into the canonical `graftorio_factorio_*` names.
 
    Note: the official `prom/prometheus` image does **not** expand environment
    variables inside config files, so the compose entrypoint renders the
@@ -164,7 +224,16 @@ labels:
 | `PROMETHEUS_PING_TIMEOUT_SECS` | backend    | `3`                      |
 | `CIRCUITDECK_CORS_ORIGINS`     | backend    | *(same-origin only)*     |
 | `VITE_API_BASE_URL`            | frontend   | `/api`                   |
-| `FACTORIO_METRICS_TARGET`      | prometheus | `circuitdeck-mock:9105`  |
+| `COMPOSE_PROFILES`             | compose    | `mock` (when using .env) |
+| `FACTORIO_METRICS_TARGET`      | prometheus | *(auto: mock or exporter)* |
+| `FACTORIO_RECORDING_RULES`     | prometheus | *(auto: on in real mode)* |
+| `FACTORIO_VERSION`             | factorio   | `latest` (Factorio 2.1)  |
+| `FACTORIO_SAVE_NAME`           | factorio   | `circuitdeck-dev`        |
+| `FACTORIO_PRESET`              | factorio   | *(map-gen defaults)*     |
+| `FACTORIO_GAME_PORT`           | factorio   | `34197` (UDP)            |
+| `FACTORIO_RCON_PORT`           | factorio   | `27015` (TCP, localhost) |
+| `FACTORIO_RCON_PASSWORD`       | factorio   | `circuitdeck` (dev only) |
+| `FACTORIO_GAME_PASSWORD`       | factorio   | *(none)*                 |
 
 Containers are non-root, multi-stage, and carry health checks. Prometheus owns
 all telemetry history (15 days retention by default); no application database
@@ -172,12 +241,23 @@ is used.
 
 ## Using real graftorio3 metrics
 
-The mock source implements the same metric names and labels the backend
-queries. Once graftorio3 metrics flow into Prometheus (via the textfile
-collector), set `FACTORIO_METRICS_TARGET` and the dashboard switches to real
-data — no code changes. Any metric your graftorio3 build names differently can
-be adapted in one place: `backend/src/promql/query.rs`.
+The backend always queries the canonical `graftorio_factorio_*` series.
+Three sources feed them:
+
+- **dev mock** — the bundled generator emits `graftorio_factorio_*` directly.
+- **dev real / prod with the mod** — real graftorio3 emits `factorio_*`
+  textfiles; `prometheus/factorio-rules.yml` records them into
+  `graftorio_factorio_*` (auto-enabled in real mode, or explicitly with
+  `FACTORIO_RECORDING_RULES=true`).
+- **prod** — point Prometheus at your node_exporter textfile collector:
+  `FACTORIO_METRICS_TARGET=your-factorio-host:9100`. Any metric your
+  graftorio3 build names differently can be adapted in one place:
+  `backend/src/promql/query.rs` (+ `prometheus/factorio-rules.yml`).
 
 ## License
 
 MIT
+
+The vendored graftorio3 mod (`factorio/mods/graftorio3_2.0.0.zip`) is MIT,
+© Keith Thornhill and contributors — see
+`factorio/mods/graftorio3_2.0.0-LICENSE`.

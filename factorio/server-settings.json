@@ -1,0 +1,21 @@
+{
+  "name": "CircuitDeck local dev",
+  "description": "Local development server feeding graftorio3 metrics to CircuitDeck",
+  "tags": ["circuitdeck", "local-dev"],
+  "max_players": 0,
+
+  "visibility": { "public": false, "lan": true },
+  "require_user_verification": false,
+  "allow_commands": "true",
+
+  "game_password": "${FACTORIO_GAME_PASSWORD}",
+
+  "autosave_interval": 10,
+  "autosave_slots": 5,
+  "auto_pause": false,
+
+  "non_blocking_saving": false,
+
+  "rcon_password": "${FACTORIO_RCON_PASSWORD}",
+  "rcon_port": ${FACTORIO_RCON_PORT}
+}

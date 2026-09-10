@@ -1,0 +1,178 @@
+# Prometheus recording rules for the CircuitDeck real-Factorio mode.
+#
+# Real graftorio3 (Factorio mod) emits `factorio_*` series via the
+# node_exporter textfile collector. The CircuitDeck backend queries the
+# canonical `graftorio_factorio_*` names that the bundled mock generator
+# emits. These rules translate between the two so the backend needs no
+# mock-vs-real knowledge; they also work unchanged for production setups
+# that scrape real graftorio3 textfiles.
+#
+# Semantics:
+# - graftorio3 production series (item/fluid/power) are cumulative totals
+#   per item (LuaFlowStatistics input/output counts). The mock's
+#   `graftorio_factorio_*_total` series are counters, so recording the
+#   cumulative gauges under the same `_total` names keeps the dashboard's
+#   rate() queries correct (rate() of a monotonic cumulative gauge works
+#   identically).
+# - graftorio3 power input/output counts are cumulative joules. Power in
+#   watts = rate(joules); the backend applies its mock-oriented
+#   `* 60 / 1e6` scaling to the recorded gauges, so the rules must record
+#   the per-tick joule value: rate(joules) / 60 ticks/s. The recorded
+#   series is therefore joules-per-tick, the same unit the mock emits.
+# - `or vector(0)` keeps scalar series present when a family is empty
+#   (e.g. no trains, no launched rockets on a fresh map).
+# - Label translation: graftorio's `item`/`fluid`/`machine`/... label
+#   names map from graftorio3's `name`/`type`/`kind` labels via
+#   label_replace.
+# - graftorio3 has no direct equivalent for satisfaction (consumer
+#   demand coverage) or per-state train counts; the closest available
+#   sources are used (generator headroom ratio for satisfaction,
+#   `factorio_trains` totals), and empty families fall back to zero.
+
+groups:
+  - name: factorio-canonical
+    interval: 15s
+    rules:
+      # ---- production (cumulative totals, like the mock's counters) ----
+      - record: graftorio_factorio_item_produced_total
+        expr: sum by (item) (label_replace(factorio_item_production_input, "item", "$1", "name", "(.*)"))
+      - record: graftorio_factorio_item_consumed_total
+        expr: sum by (item) (label_replace(factorio_item_production_output, "item", "$1", "name", "(.*)"))
+      - record: graftorio_factorio_fluid_produced_total
+        expr: sum by (fluid) (label_replace(factorio_fluid_production_input, "fluid", "$1", "name", "(.*)"))
+      - record: graftorio_factorio_fluid_consumed_total
+        expr: sum by (fluid) (label_replace(factorio_fluid_production_output, "fluid", "$1", "name", "(.*)"))
+      # graftorio3 has no science-pack counter; the backend uses this
+      # series as a "rockets launched" indicator, which maps cleanly.
+      - record: graftorio_factorio_research_packages_built_total
+        expr: sum(factorio_rockets_launched) or vector(0)
+
+      # ---- power (joules per tick, same unit the mock emits) ----
+      # The mod's input/output counts are cumulative joules per producer
+      # name; convert to per-tick joules with rate()/60 so the backend's
+      # `* 60 / 1e6` scaling yields correct MW.
+      - record: graftorio_factorio_power_production
+        expr: >-
+          sum by (type) (label_replace(
+            sum by (name) (rate(factorio_power_production_input[2m])) / 60,
+            "type", "overall", "", ""))
+          or
+          max by (type) (label_replace(vector(0), "type", "overall", "", ""))
+      - record: graftorio_factorio_power_consumption
+        expr: >-
+          sum by (type) (label_replace(
+            sum by (name) (rate(factorio_power_production_output[2m])) / 60,
+            "type", "overall", "", ""))
+          or
+          max by (type) (label_replace(vector(0), "type", "overall", "", ""))
+      # The backend selects by-source series via
+      # graftorio_factorio_power_production{type="by_source"} with a
+      # `source` label (same shape the mock emits).
+      - record: graftorio_factorio_power_production
+        expr: >-
+          sum by (source, type) (label_replace(
+            label_replace(
+              sum by (name) (rate(factorio_power_production_input[2m])) / 60,
+              "source", "$1", "name", "(.*)"),
+            "type", "by_source", "", ""))
+      - record: graftorio_factorio_accumulator_charge
+        expr: >-
+          max by (type) (label_replace(
+            sum(factorio_accumulator_charge_joules) /
+            clamp_min(sum(factorio_accumulator_capacity_joules), 1),
+            "type", "charge", "", ""))
+          or
+          max by (type) (label_replace(vector(0), "type", "charge", "", ""))
+      # graftorio3 has no consumer-satisfaction gauge; approximate with
+      # stored-charge share of installed generation headroom is not
+      # equivalent, so keep the series present and neutral (1.0 = no
+      # measured shortfall) rather than dropping the stat.
+      - record: graftorio_factorio_satisfaction
+        expr: >-
+          max by (type) (label_replace(vector(1), "type", "satisfaction", "", ""))
+
+      # ---- game state ----
+      - record: graftorio_factorio_game_tick
+        expr: max(factorio_tick) or vector(0)
+      # graftorio legacy uses type="time"; graftorio3 names it by_time.
+      - record: graftorio_factorio_evolution_factor
+        expr: >-
+          max without (force, surface) (label_replace(
+            factorio_evolution, "type", "time", "type", "by_time"))
+      - record: graftorio_factorio_pollution
+        expr: >-
+          max by (type) (label_replace(
+            max(factorio_surface_pollution) or vector(0),
+            "type", "overall", "", ""))
+
+      # ---- research ----
+      # The in-progress tech is the queue entry with index="1"; its
+      # progress value rides on the same series. The backend picks the
+      # tech with the lowest progress value from the series set, so we
+      # export one series per queued tech carrying its progress.
+      - record: graftorio_factorio_research_in_progress
+        expr: max by (tech) (label_replace(factorio_research_queue, "tech", "$1", "name", "(.*)"))
+      - record: graftorio_factorio_research_progress
+        expr: >-
+          max by (type) (label_replace(
+            max(factorio_research_queue{index="1"}),
+            "type", "progress", "", ""))
+      - record: graftorio_factorio_research_queue_size
+        expr: count(factorio_research_queue) or vector(0)
+      - record: graftorio_factorio_research_completed_total
+        expr: max(factorio_technologies_researched) or vector(0)
+
+      # ---- factory machines ----
+      # factorio_entities carries entity categories on a `type` label.
+      - record: graftorio_factorio_machine_count
+        expr: sum without (instance, job) (label_replace(factorio_entities, "machine", "$1", "type", "(.*)"))
+
+      # ---- logistics ----
+      # factorio_logistic_robots has kind = logistic|construction|cells
+      # (depth collector); graftorio legacy labels are logistic-robot /
+      # construction-robot.
+      - record: graftorio_factorio_robot_count
+        expr: >-
+          sum by (robot) (label_replace(
+            factorio_logistic_robots{kind="logistic"}, "robot", "logistic-robot", "kind", "logistic"))
+          or
+          sum by (robot) (label_replace(
+            factorio_logistic_robots{kind="construction"}, "robot", "construction-robot", "kind", "construction"))
+      - record: graftorio_factorio_chest_contents
+        expr: sum by (item) (label_replace(factorio_logistic_storage_items, "item", "$1", "name", "(.*)"))
+
+      # ---- trains ----
+      # graftorio3 counts trains per surface (factorio_trains) and flags
+      # manual-mode stragglers (factorio_trains_manual); it has no
+      # per-state breakdown. Export the total under the backend's
+      # "moving" bucket and manual as its own bucket.
+      - record: graftorio_factorio_train_count
+        expr: >-
+          sum by (state) (label_replace(
+            max(factorio_trains), "state", "moving-to-station", "", ""))
+          or
+          sum by (state) (label_replace(
+            max(factorio_trains_manual), "state", "manual-control", "", ""))
+      - record: graftorio_factorio_train_station_count
+        expr: >-
+          max by (type) (label_replace(count(factorio_train_arrival_time), "type", "count", "", ""))
+          or vector(0)
+      # Wait times are recorded per (from, to) trip; the destination
+      # station is the closest mapping to "station waiting cargo".
+      - record: graftorio_factorio_train_station_waiting
+        expr: sum by (station) (label_replace(factorio_train_wait_time, "station", "$1", "to", "(.*)"))
+
+      # ---- space platforms ----
+      - record: graftorio_factorio_platform_speed
+        expr: max by (platform) (label_replace(factorio_platform_speed, "platform", "$1", "platform", "(.*)"))
+      # graftorio3 has no per-platform fuel gauge; the mod's platform
+      # pausing state (1 = paused) is exported as fuel 0, others as 1.
+      - record: graftorio_factorio_platform_fuel
+        expr: >-
+          sum by (platform) (label_replace(
+            factorio_platform_paused{force!=""} == bool 0,
+            "platform", "$1", "platform", "(.*)"))
+          or
+          sum by (platform) (label_replace(
+            factorio_platform_paused{force!=""} == bool 1,
+            "platform", "0", "", ""))

@@ -1,0 +1,34 @@
+# Prometheus scrape configuration template for the CircuitDeck dashboard.
+#
+# NOTE: the official prom/prometheus image does NOT expand environment
+# variables in config files. The compose entrypoint renders this template
+# with busybox sed before starting Prometheus:
+#   ${FACTORIO_METRICS_TARGET} -> value of the env var, defaulting to the
+#   bundled mock generator (circuitdeck-mock:9105) in development.
+#
+# The `factorio-metrics` job points at the endpoint exposing
+# graftorio3-compatible metrics:
+#   - dev:  the bundled mock generator (circuitdeck-mock:9105)
+#   - prod: node_exporter's textfile collector on the Factorio host
+#           (set FACTORIO_METRICS_TARGET=your-factorio-host:9100)
+#
+# graftorio3 writes .prom files into the node_exporter textfile directory:
+#   https://github.com/tarik-guney/graftorio (2.x lineage)
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: "circuitdeck"
+
+scrape_configs:
+  - job_name: "factorio-metrics"
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "${FACTORIO_METRICS_TARGET}"
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

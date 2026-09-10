@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- CircuitDeck: circuit-network control deck motif -->
+  <rect width="32" height="32" rx="6" fill="#24282e"/>
+  <rect x="4" y="4" width="24" height="24" rx="3" fill="none" stroke="#4a5260" stroke-width="2"/>
+  <circle cx="7" cy="7" r="1.6" fill="#ff9a1f"/>
+  <circle cx="25" cy="7" r="1.6" fill="#ff9a1f"/>
+  <circle cx="7" cy="25" r="1.6" fill="#ff9a1f"/>
+  <circle cx="25" cy="25" r="1.6" fill="#ff9a1f"/>
+  <path d="M9 16h5M14 13v6M14 16h5l3-4M19 16h3" stroke="#ff9a1f" stroke-width="2" stroke-linecap="round" fill="none"/>
+  <path d="M22 12v8" stroke="#7dc242" stroke-width="2" stroke-linecap="round"/>
+</svg>

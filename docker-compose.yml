@@ -1,0 +1,99 @@
+name: circuitdeck
+
+services:
+  # ---------------------------------------------------------------------------
+  # Mock Factorio metrics source (development only).
+  # In production, point Prometheus at node_exporter on the Factorio host.
+  # ---------------------------------------------------------------------------
+  circuitdeck-mock:
+    build:
+      context: ./dev/metrics-mock
+      dockerfile: Dockerfile
+    container_name: circuitdeck-mock
+    restart: unless-stopped
+    ports:
+      - "9105:9105"
+    networks: [circuitdeck]
+
+  # ---------------------------------------------------------------------------
+  # Prometheus: owns all telemetry history.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v3.7.3
+    container_name: circuitdeck-prometheus
+    restart: unless-stopped
+    # The official prom/prometheus image does not expand env vars in config
+    # files, so render the template (prometheus/prometheus.yml) with busybox
+    # sed before starting the server.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        sed "s|\$${FACTORIO_METRICS_TARGET}|$$FACTORIO_METRICS_TARGET|g" \
+          /etc/prometheus/prometheus.template.yml > /prometheus/prometheus.yml
+        exec /bin/prometheus --config.file=/prometheus/prometheus.yml \
+          --storage.tsdb.retention.time=15d --web.enable-lifecycle "$$@"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.template.yml:ro
+      - prometheus-data:/prometheus
+    environment:
+      FACTORIO_METRICS_TARGET: ${FACTORIO_METRICS_TARGET:-circuitdeck-mock:9105}
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "-qO-",
+          "http://127.0.0.1:9090/-/healthy",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    networks: [circuitdeck]
+
+  # ---------------------------------------------------------------------------
+  # Rust/Axum dashboard API.
+  # ---------------------------------------------------------------------------
+  circuitdeck-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile/backend
+    container_name: circuitdeck-backend
+    restart: unless-stopped
+    environment:
+      CIRCUITDECK_BIND_ADDR: 0.0.0.0:8080
+      PROMETHEUS_URL: http://prometheus:9090
+      RUST_LOG: info
+    ports:
+      - "8080:8080"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks: [circuitdeck]
+
+  # ---------------------------------------------------------------------------
+  # Svelte dashboard (static build + /api reverse proxy).
+  # ---------------------------------------------------------------------------
+  circuitdeck-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile/frontend
+    container_name: circuitdeck-frontend
+    restart: unless-stopped
+    environment:
+      CIRCUITDECK_BACKEND_HOST: circuitdeck-backend:8080
+    ports:
+      - "8088:8080"
+    depends_on:
+      circuitdeck-backend:
+        condition: service_healthy
+    networks: [circuitdeck]
+
+networks:
+  circuitdeck:
+    driver: bridge
+
+volumes:
+  prometheus-data:

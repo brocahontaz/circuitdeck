@@ -1,0 +1,21 @@
+# Caddyfile for the CircuitDeck frontend container.
+# Serves the built SPA and reverse-proxies /api to the Rust backend.
+{
+	admin off
+}
+
+:8080 {
+	encode gzip
+
+	# Dashboard API owned by the Rust backend.
+	handle /api/* {
+		reverse_proxy {$CIRCUITDECK_BACKEND_HOST:backend:8080}
+	}
+
+	# SPA: serve static assets, fall back to index.html.
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}

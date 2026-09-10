@@ -1,0 +1,14 @@
+# Keep the Docker build contexts small — the backend/frontend builds use the
+# repo root as context, so heavy artifacts must not ship to the daemon.
+.git
+.github
+backend/target
+frontend/node_modules
+frontend/dist
+**/node_modules
+**/target
+**/dist
+dev/metrics-mock/__pycache__
+*.log
+.env
+.env.local

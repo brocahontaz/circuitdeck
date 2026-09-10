@@ -1,0 +1,74 @@
+/* CircuitDeck global styles: Factorio-inspired industrial theme.
+   No Factorio assets are used; the palette and textures are original. */
+
+:root {
+  --bg: #1a1d21;
+  --bg-panel: #24282e;
+  --bg-panel-raised: #2d323a;
+  --border: #3d444e;
+  --border-riveted: #4a5260;
+  --text: #d8d5cf;
+  --text-dim: #93928c;
+  --text-bright: #f4f1ea;
+  --accent: #ff9a1f;
+  --accent-dim: #b56a12;
+  --green: #7dc242;
+  --red: #e04f3f;
+  --yellow: #ffd23f;
+  --blue: #4fa8e0;
+  --purple: #a06fe0;
+  --font-mono:
+    "JetBrains Mono", "Cascadia Code", ui-monospace, "SF Mono", Menlo, Consolas,
+    monospace;
+  --font-sans:
+    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  background-image: repeating-linear-gradient(
+    0deg,
+    rgba(255, 255, 255, 0.012) 0px,
+    rgba(255, 255, 255, 0.012) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--text-bright);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+a {
+  color: var(--accent);
+}
+
+code,
+.mono {
+  font-family: var(--font-mono);
+}
+
+#app {
+  min-height: 100vh;
+}

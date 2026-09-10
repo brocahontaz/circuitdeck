@@ -1,3 +1,4 @@
+---
 # Prometheus recording rules for the CircuitDeck real-Factorio mode.
 #
 # Real graftorio3 (Factorio mod) emits `factorio_*` series via the

@@ -1,0 +1,169 @@
+---
+# CircuitDeck CI — runs the repository's own quality gates on every PR and
+# push to main. The publish workflow (docker-publish.yml) reuses the backend
+# test job via workflow_call, so tests always gate published images.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # github.run_id is unique per run, so the standalone CI run and the run
+  # invoked (workflow_call) by docker-publish.yml on the same push to main
+  # never collide in the concurrency group and cancel each other.
+  group: ci-${{ github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (test / fmt / clippy / deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        # Toolchain pinned via the `toolchain` input; also declared as
+        # `rust-version` in backend/Cargo.toml and used by Dockerfile/backend.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: '1.90'
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: backend
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@c3ec0de9ae7f1019cea21aa96aa0a895b9552063 # v2.87.9
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Run tests
+        working-directory: backend
+        run: cargo test --locked
+
+      - name: Check formatting
+        working-directory: backend
+        run: cargo fmt --check
+
+      - name: Run clippy
+        working-directory: backend
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check dependencies (licenses, advisories, bans, sources)
+        working-directory: backend
+        run: cargo deny check --locked
+
+  frontend:
+    name: Frontend (test / lint / build)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: frontend
+        run: npm run test
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Check formatting
+        working-directory: frontend
+        run: npm run format:check
+
+      - name: Production build
+        working-directory: frontend
+        run: npm run build
+
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Shell script lint
+        run: shellcheck factorio/bootstrap.sh factorio/exporter/serve.sh
+
+      - name: YAML lint (workflows + prometheus templates)
+        # `truthy` is disabled: the bare `on:` key is required GitHub Actions
+        # syntax and a known yamllint false positive.
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: {max: 160}, comments: {min-spaces-from-content: 1}, truthy: disable}}" \
+            .github/workflows/*.yml prometheus/*.yml docker-compose.yml
+
+      - name: Validate compose files
+        run: |
+          docker compose config --quiet
+          docker compose --profile mock config --quiet
+          docker compose --profile factorio config --quiet
+
+      - name: Download actionlint
+        run: |
+          curl -fsSL --retry 3 -o /tmp/actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          tar -xzf /tmp/actionlint.tgz -C /tmp actionlint
+          /tmp/actionlint -version
+
+      - name: Run actionlint
+        run: /tmp/actionlint -color
+
+      - name: Lint Dockerfiles
+        # DL3008: apt package pinning is delegated to the slim base image snapshots.
+        # DL3066: non-numeric system user is intentional (named for readability).
+        # DL3025: shell-form HEALTHCHECK CMD is deliberate (pipes/redirects).
+        run: |
+          curl -fsSL --retry 3 -o /tmp/hadolint \
+            https://github.com/hadolint/hadolint/releases/download/v2.15.1/hadolint-Linux-x86_64
+          chmod +x /tmp/hadolint
+          /tmp/hadolint --version
+          /tmp/hadolint --ignore DL3008 --ignore DL3066 --ignore DL3025 \
+            Dockerfile/backend Dockerfile/frontend
+
+      - name: Validate Caddyfile
+        run: |
+          docker run --rm -i caddy:2-alpine caddy validate --adapter caddyfile --config /dev/stdin < docker/frontend.Caddyfile
+
+      - name: Check action pins
+        run: |
+          bad=0
+          for f in .github/workflows/*.yml; do
+            # Every `uses:` must be pinned to a full 40-char commit SHA.
+            while IFS= read -r line; do
+              ref=$(printf '%s' "$line" | sed -E 's|^.*@||; s|[[:space:]].*||')
+              if ! printf '%s' "$ref" | grep -qE '^[0-9a-f]{40}$'; then
+                echo "::error file=$f::unpinned action ref: $line"
+                bad=1
+              fi
+            done < <(grep -oE 'uses: [^ ]+@[^ ]+' "$f")
+          done
+          exit $bad

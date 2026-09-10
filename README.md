@@ -179,6 +179,22 @@ Test coverage includes:
 - the Docker stack in both modes (`docker compose --profile mock up --build`
   and `--profile factorio`) as the end-to-end check
 
+## Container images
+
+On every push to `main` and on `v*` tags, GitHub Actions builds and publishes
+`linux/amd64` images to GHCR:
+
+| Image | Purpose |
+| ----- | ------- |
+| `ghcr.io/<owner>/circuitdeck-backend` | Rust/Axum dashboard API |
+| `ghcr.io/<owner>/circuitdeck-frontend` | Caddy serving the Svelte SPA + `/api` proxy |
+
+Tags: `latest` and `main` (default branch), `sha-<short>` (every build),
+`<semver>` and `<major>.<minor>` (on `v*` tags). Images are gated by the CI
+test suite and carry build provenance attestations. Deployment consumes these
+images from a separate infrastructure repository; Prometheus and the dev-only
+services run from upstream images / compose profiles as before.
+
 ## Production setup
 
 The stack is designed to sit behind an external Traefik reverse proxy — Traefik

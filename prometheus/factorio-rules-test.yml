@@ -1,3 +1,4 @@
+---
 # promtool unit tests for prometheus/factorio-rules.yml (real-mode translation).
 # Run: docker run --rm -v $PWD/prometheus:/prom:ro --entrypoint /bin/promtool prom/prometheus:v3.7.3 test rules /prom/factorio-rules-test.yml
 # promtool unit test for the CircuitDeck real-mode power rules.

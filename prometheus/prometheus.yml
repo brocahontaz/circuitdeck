@@ -1,3 +1,4 @@
+---
 # Prometheus scrape configuration template for the CircuitDeck dashboard.
 #
 # NOTE: the official prom/prometheus image does NOT expand environment

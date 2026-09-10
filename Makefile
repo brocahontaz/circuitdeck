@@ -88,15 +88,16 @@ dev-mock: ## Run the mock graftorio3 metrics source on :9105.
 
 # --- Combined verification ----------------------------------------------------
 
-validate-infra: ## Validate compose (both modes), factorio rules, Caddyfile (requires docker CLI + caddy).
+validate-infra: ## Validate compose (both modes), factorio rules, Caddyfile (requires docker CLI).
 	docker compose config --quiet
 	docker compose --profile mock config --quiet
 	docker compose --profile factorio config --quiet
 	@docker run --rm -v $$(pwd)/prometheus:/prom:ro --entrypoint /bin/promtool prom/prometheus:v3.7.3 \
 		test rules /prom/factorio-rules-test.yml \
 		|| echo "docker unavailable; skipping factorio-rules unit tests"
-	@command -v caddy >/dev/null 2>&1 && caddy validate --config docker/frontend.Caddyfile --adapter caddyfile || \
-		echo "caddy CLI not installed; skipping Caddyfile validation"
+	@docker run --rm -i caddy:2-alpine caddy validate --adapter caddyfile --config /dev/stdin \
+		< docker/frontend.Caddyfile \
+		|| echo "docker unavailable; skipping Caddyfile validation"
 
 check: test-backend lint-backend test-frontend lint-frontend validate-infra ## Run all host-side checks.
 

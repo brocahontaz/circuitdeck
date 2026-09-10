@@ -62,7 +62,7 @@ jobs:
 
       - name: Check dependencies (licenses, advisories, bans, sources)
         working-directory: backend
-        run: cargo deny check --locked
+        run: cargo deny check
 
   frontend:
     name: Frontend (test / lint / build)
